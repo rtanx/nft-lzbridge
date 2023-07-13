@@ -1,0 +1,14 @@
+{
+    "$schema": "http://json.schemastore.org/prettierrc",
+    "overrides": [
+        {
+            "files": "*.sol",
+            "options": {
+                "printWidth": 150,
+                "singleQuote": false,
+                "semi": true,
+                "bracketSpacing": true
+            }
+        }
+    ]
+}

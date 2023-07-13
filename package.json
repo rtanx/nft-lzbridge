@@ -1,0 +1,24 @@
+{
+  "name": "lzbridge",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Ridwan Maulana Tanjung",
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^3.0.3",
+    "@nomicfoundation/hardhat-toolbox": "^3.0.0",
+    "ethers": "^6.6.2",
+    "hardhat": "^2.16.1",
+    "hardhat-contract-sizer": "^2.10.0",
+    "@openzeppelin/hardhat-upgrades": "^2.0.0"
+  },
+  "dependencies": {
+    "@layerzerolabs/lz-evm-sdk-v2": "^1.5.20",
+    "@layerzerolabs/solidity-examples": "^0.0.13",
+    "@layerzerolabs/ua-utils": "^0.0.1"
+  }
+}
