@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.9;
+pragma solidity ^0.8.18;
 
 // import "@layerzerolabs/solidity-examples/contracts/token/onft/extension/ProxyONFT721.sol";
 import "@layerzerolabs/solidity-examples/contracts/lzApp/NonblockingLzApp.sol";
@@ -106,7 +106,7 @@ contract RankerDaoBridge is NonblockingLzApp, IERC721Receiver {
             token = IERC721(wrapped);
         }
 
-        address transferRecipient = address(uint160(uint256(transferData.recipientAddress)));
+        address transferRecipient = bytes32ToAddress(transferData.recipientAddress);
 
         if (transferData.tokenChainId != lzChainId) {
             WrappedERC721Implementation(address(token)).mint(transferRecipient, transferData.tokenId, transferData.uri);
@@ -114,10 +114,10 @@ contract RankerDaoBridge is NonblockingLzApp, IERC721Receiver {
             token.safeTransferFrom(address(this), transferRecipient, transferData.tokenId);
         }
         emit ReceiveNFT(
-            address(uint160(uint256(transferData.tokenAddress))),
+            bytes32ToAddress(transferData.tokenAddress),
             address(token),
-            address(uint160(uint256(transferData.srcChainWrappedTokenAddress))),
-            address(uint160(uint256(transferData.senderAddress))),
+            bytes32ToAddress(transferData.srcChainWrappedTokenAddress),
+            bytes32ToAddress(transferData.senderAddress),
             transferRecipient,
             transferData.tokenId,
             transferData.senderChainId,
@@ -188,39 +188,56 @@ contract RankerDaoBridge is NonblockingLzApp, IERC721Receiver {
     /// @param recipientChainId The destination receipent lz chainId
     /// @param recipientDestAddress a wallet address of recipient in destination chain
     function transferNFT(address token, uint256 tokenId, uint16 recipientChainId, address recipientDestAddress) public payable {
-        uint16 tokenChainId;
-        bytes32 tokenAddress;
-        bytes32 recipientDestAddressBytes = bytes32(uint256(uint160(recipientDestAddress)));
-        address inChainWrappedTokenAddress;
+        TransferData memory transferData;
 
         if (isWrappedAsset[token]) {
             // if it's wrapper asset, then retrive the original token chainId
-            tokenChainId = WrappedERC721Implementation(token).chainId();
+            transferData.tokenChainId = WrappedERC721Implementation(token).chainId();
             // get the native contract address
-            tokenAddress = WrappedERC721Implementation(token).nativeContract();
-            inChainWrappedTokenAddress = token;
+            transferData.tokenAddress = WrappedERC721Implementation(token).nativeContract();
+            transferData.srcChainWrappedTokenAddress = addressToBytes32(token);
         } else {
-            tokenChainId = lzChainId;
-            tokenAddress = bytes32(uint256(uint160(token)));
+            transferData.tokenChainId = lzChainId;
+            transferData.tokenAddress = addressToBytes32(token);
             require(ERC165(token).supportsInterface(type(IERC721).interfaceId), "token must support the ERC721 interface");
             require(ERC165(token).supportsInterface(type(IERC721Metadata).interfaceId), "must support the ERC721-Metadata extension");
         }
-        string memory symbolString;
-        string memory nameString;
-        string memory uriString;
 
-        {
-            (, bytes memory queriedSymbol) = token.staticcall(abi.encodeWithSignature("symbol()"));
-            (, bytes memory queriedName) = token.staticcall(abi.encodeWithSignature("name()"));
-            (, bytes memory queriedUri) = token.staticcall(abi.encodeWithSignature("tokenURI(uint256)", tokenId));
+        (transferData.symbol, transferData.name, transferData.uri) = _retrieveMetadata(token, tokenId);
 
-            symbolString = abi.decode(queriedSymbol, (string));
-            nameString = abi.decode(queriedName, (string));
-            uriString = abi.decode(queriedUri, (string));
+        IERC721(token).safeTransferFrom(_msgSender(), address(this), tokenId);
+        if (transferData.tokenChainId != lzChainId) {
+            WrappedERC721Implementation(token).burn(tokenId);
         }
+        transferData.tokenId = tokenId;
+        transferData.recipientAddress = addressToBytes32(recipientDestAddress);
+        transferData.recipientChainId = recipientChainId;
+        transferData.senderAddress = addressToBytes32(_msgSender());
+        transferData.senderChainId = lzChainId;
 
-        bytes32 symbol;
-        bytes32 name;
+        _transferNFT(transferData);
+
+        emit TransferNFT(
+            token,
+            bytes32ToAddress(transferData.srcChainWrappedTokenAddress),
+            _msgSender(),
+            recipientDestAddress,
+            transferData.tokenChainId,
+            transferData.senderChainId,
+            recipientChainId,
+            tokenId
+        );
+    }
+
+    function _determineTokenAndChain() internal view returns (uint16 tokenChainId, address tokenAddress, address inChainWrappedTokenAddress) {}
+
+    function _retrieveMetadata(address tokenAddress, uint256 tokenId) internal view returns (bytes32 symbol, bytes32 name, string memory uri) {
+        (, bytes memory queriedSymbol) = tokenAddress.staticcall(abi.encodeWithSignature("symbol()"));
+        (, bytes memory queriedName) = tokenAddress.staticcall(abi.encodeWithSignature("name()"));
+        (, bytes memory queriedUri) = tokenAddress.staticcall(abi.encodeWithSignature("tokenURI(uint256)", tokenId));
+        string memory symbolString = abi.decode(queriedSymbol, (string));
+        string memory nameString = abi.decode(queriedName, (string));
+        uri = abi.decode(queriedUri, (string));
 
         assembly {
             // first 32 bytes hold string length
@@ -233,38 +250,6 @@ contract RankerDaoBridge is NonblockingLzApp, IERC721Receiver {
             symbol := mload(add(symbolString, 32))
             name := mload(add(nameString, 32))
         }
-
-        IERC721(token).safeTransferFrom(_msgSender(), address(this), tokenId);
-
-        if (tokenChainId != lzChainId) {
-            WrappedERC721Implementation(token).burn(tokenId);
-        }
-        TransferData memory transferData = TransferData({
-            tokenAddress: tokenAddress,
-            srcChainWrappedTokenAddress: bytes32(uint256(uint160(inChainWrappedTokenAddress))),
-            tokenChainId: tokenChainId,
-            symbol: symbol,
-            name: name,
-            tokenId: tokenId,
-            uri: uriString,
-            recipientAddress: recipientDestAddressBytes,
-            recipientChainId: recipientChainId,
-            senderAddress: bytes32(uint256(uint160(_msgSender()))),
-            senderChainId: lzChainId
-        });
-
-        _transferNFT(transferData);
-
-        emit TransferNFT(
-            address(uint160(uint256(tokenAddress))),
-            inChainWrappedTokenAddress,
-            _msgSender(),
-            recipientDestAddress,
-            tokenChainId,
-            lzChainId,
-            recipientChainId,
-            tokenId
-        );
     }
 
     function _transferNFT(TransferData memory transfer) internal {
@@ -285,7 +270,6 @@ contract RankerDaoBridge is NonblockingLzApp, IERC721Receiver {
 
     function _encodeTransfer(TransferData memory transfer) internal pure returns (bytes memory) {
         require(bytes(transfer.uri).length <= 200, "tokenURI must not exceed 200 bytes");
-
         bytes memory encoded = abi.encodePacked(
             transfer.tokenAddress,
             transfer.tokenChainId,
@@ -314,6 +298,10 @@ contract RankerDaoBridge is NonblockingLzApp, IERC721Receiver {
 
     function bytes32ToAddress(bytes32 b) internal pure returns (address) {
         return address(uint160(uint256(b)));
+    }
+
+    function addressToBytes32(address addr) internal pure returns (bytes32) {
+        return bytes32(uint256(uint160(addr)));
     }
     // ------------------ END HELPERS ----------------
 }
