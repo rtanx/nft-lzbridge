@@ -272,6 +272,7 @@ contract RankerDaoBridge is NonblockingLzApp, IERC721Receiver {
         require(bytes(transfer.uri).length <= 200, "tokenURI must not exceed 200 bytes");
         bytes memory encoded = abi.encodePacked(
             transfer.tokenAddress,
+            transfer.srcChainWrappedTokenAddress,
             transfer.tokenChainId,
             transfer.symbol,
             transfer.name,
