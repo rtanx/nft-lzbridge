@@ -4,8 +4,10 @@ import { HardhatUserConfig, task } from "hardhat/config";
 import "hardhat-contract-sizer";
 import "hardhat-deploy";
 import "@openzeppelin/hardhat-upgrades";
+import "hardhat-gas-reporter";
 
-const { BSCSCAN_API_KEY, ETHERSCAN_API_KEY } = process.env;
+
+const { BSCSCAN_API_KEY, ETHERSCAN_API_KEY, POLYGONSCAN_API_KEY, SNOWTRACE_API_KEY, ARBISCAN_API_KEY, MOONSCAN_API_KEY } = process.env;
 
 task("accounts", "Prints the list of accounts", async (taskArgs, hre) => {
   const accounts = await hre.ethers.getSigners();
@@ -103,12 +105,16 @@ const config: HardhatUserConfig = {
   },
   etherscan: {
     apiKey: {
+      ethereum: `${ETHERSCAN_API_KEY}`,
+      goerli: `${ETHERSCAN_API_KEY}`,
       bsc: `${BSCSCAN_API_KEY}`,
       bscTestnet: `${BSCSCAN_API_KEY}`,
-      'bsc-testnet': `${BSCSCAN_API_KEY}`,
-      ethereum: `${ETHERSCAN_API_KEY}`,
-      // 0x1f49bCd396bC4810FF88f0d1b24703E46115ceC4 0x6Fcb97553D41516Cb228ac03FdC8B9a0a9df04A1
-      goerli: `${ETHERSCAN_API_KEY}`,
+      polygon:`${POLYGONSCAN_API_KEY}`,
+      polygonMumbai:`${POLYGONSCAN_API_KEY}`,
+      avalanche:`${SNOWTRACE_API_KEY}`,
+      avalancheFujiTestnet: `${SNOWTRACE_API_KEY}`,
+      arbitrumGoerli: `${ARBISCAN_API_KEY}`,
+      moonbaseAlpha: `${MOONSCAN_API_KEY}`
     }
   },
   contractSizer: {
@@ -182,22 +188,24 @@ const config: HardhatUserConfig = {
       chainId: 5,
       accounts: accounts(),
     },
-    'bsc-testnet': {
+    bscTestnet: {
       url: 'https://data-seed-prebsc-1-s1.binance.org:8545/',
       chainId: 97,
       accounts: accounts(),
+      gasPrice: 10000000000
     },
-    fuji: {
+    avalancheFujiTestnet: {
       url: `https://api.avax-test.network/ext/bc/C/rpc`,
       chainId: 43113,
       accounts: accounts(),
     },
-    mumbai: {
-      url: "https://rpc-mumbai.maticvigil.com/",
+    polygonMumbai: {
+      url: "https://polygon-mumbai-bor.publicnode.com",
       chainId: 80001,
       accounts: accounts(),
+      gasPrice:102200000000
     },
-    'arbitrum-goerli': {
+    arbitrumGoerli: {
       url: `https://goerli-rollup.arbitrum.io/rpc/`,
       chainId: 421613,
       accounts: accounts(),
@@ -211,6 +219,12 @@ const config: HardhatUserConfig = {
       url: `https://rpc.ankr.com/fantom_testnet`,
       chainId: 4002,
       accounts: accounts(),
+    },
+    // moonbeam testnet
+    moonbaseAlpha: {
+      url: "https://rpc.api.moonbase.moonbeam.network",
+      chainId:1287,
+      accounts:accounts(),
     }
   }
 
