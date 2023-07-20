@@ -20,6 +20,7 @@
   "dependencies": {
     "@layerzerolabs/lz-evm-sdk-v2": "^1.5.20",
     "@layerzerolabs/solidity-examples": "^0.0.13",
-    "@layerzerolabs/ua-utils": "^0.0.1"
+    "@layerzerolabs/ua-utils": "^0.0.1",
+    "eth-revert-reason": "^1.0.3"
   }
 }

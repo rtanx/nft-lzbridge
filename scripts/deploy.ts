@@ -55,23 +55,24 @@ async function main() {
   }
 
   const [, deployer] = await ethers.getSigners();
-  const factory = await ethers.getContractFactory('RankerDaoBridge');
+  const factory = await ethers.getContractFactory('LzNFTBridge');
 
   console.log(`Contract will be deployed with account address ${deployer.address}`);
   console.log("With LayerZero configuration: ");
   console.table(depConf);
   console.log(`Deploying contract to ${network.name}...`);
 
-  const contract = await factory.connect(deployer).deploy(depConf.lz0EndpointAddress)
+  const contract = await factory.connect(deployer).deploy(depConf.lz0chainId,depConf.lz0EndpointAddress)
   const contractAddress = await contract.getAddress();
   console.log(`Contract deployed to address ${contractAddress}`);
 
+  await contract.waitForDeployment();
   await contract.deploymentTransaction()?.wait();
   console.log("Verifying deployed contract...")
-  // await run("verify:verify", {
-  //   address: contractAddress,
-  //   constructorArguments: [depConf.lz0EndpointAddress]
-  // });
+  await run("verify:verify", {
+    address: contractAddress,
+    constructorArguments: [depConf.lz0chainId ,depConf.lz0EndpointAddress]
+  });
 
 }
 

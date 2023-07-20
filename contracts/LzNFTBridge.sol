@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.18;
 
-// import "@layerzerolabs/solidity-examples/contracts/token/onft/extension/ProxyONFT721.sol";
 import "@layerzerolabs/solidity-examples/contracts/lzApp/NonblockingLzApp.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
@@ -10,54 +9,21 @@ import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import "./token/WrappedERC721Implementation.sol";
 import "@layerzerolabs/solidity-examples/contracts/util/BytesLib.sol";
 import "./token/BridgeNFT.sol";
+import "./BridgeState.sol";
 
-contract RankerDaoBridge is NonblockingLzApp, IERC721Receiver {
+contract LzNFTBridge is NonblockingLzApp, IERC721Receiver, BridgeState {
     using BytesLib for bytes;
-
-    // Mapping of bridge contracts on other chains
-    mapping(uint16 => bytes32) bridgeImplementations;
-
-    // Mapping of wrapped assets (chainID => nativeAddress => wrappedAddress)
-    mapping(uint16 => mapping(bytes32 => address)) wrappedAssets;
-
-    // Mapping to safely identify wrapped assets
-    mapping(address => bool) isWrappedAsset;
 
     // Provider chainId where contract deployed
     uint16 public immutable lzChainId;
 
-    struct TransferData {
-        // Address of the original token. Left-zero-padded if shorter than 32 bytes
-        bytes32 tokenAddress;
-        // Address of the wrapped token from sender chain. Left-zero-padded if shorter than 32 bytes
-        // value would be address(0x0) if the source chain is where the original token live (token not wrapped previously)
-        bytes32 srcChainWrappedTokenAddress;
-        // Lz chain ID of the token
-        uint16 tokenChainId;
-        // Symbol of the token
-        bytes32 symbol;
-        // Name of the token
-        bytes32 name;
-        // TokenID of the token
-        uint256 tokenId;
-        // URI of the token metadata (UTF-8)
-        string uri;
-        // Address of the recipient. Left-zero-padded if shorter than 32 bytes
-        bytes32 recipientAddress;
-        // Chain ID of the recipient
-        uint16 recipientChainId;
-        // Sender address (on source chain)
-        bytes32 senderAddress;
-        // Chain ID of the sender
-        uint16 senderChainId;
-    }
+    uint256 defaultGasForDestinationLzReceive = 1000000;
+    uint16 public immutable ADAPTER_PARAM_VERSION = 1;
 
     event TransferNFT(
-        address originalTokenAddress,
-        address inChainWrappedTokenAddress,
+        address tokenAddress,
         address senderAddress,
         address recipientAddress,
-        uint16 originalTokenChainId,
         uint16 senderChainId,
         uint16 recipientChainId,
         uint256 tokenId
@@ -66,16 +32,14 @@ contract RankerDaoBridge is NonblockingLzApp, IERC721Receiver {
     event ReceiveNFT(
         address originalTokenAddress,
         address wrappedTokenAddress,
-        address sourceChainWrappedTokenAddress,
-        address senderAddress,
         address recipientAddress,
         uint256 tokenId,
         uint16 senderChainId,
         uint16 originalTokenChainId
     );
 
-    constructor(address _endpoint) NonblockingLzApp(_endpoint) {
-        lzChainId = lzEndpoint.getChainId();
+    constructor(uint16 _lzChainId, address _endpoint) NonblockingLzApp(_endpoint) {
+        lzChainId = _lzChainId;
     }
 
     function onERC721Received(address operator, address /*from*/, uint256 /*tokenId*/, bytes calldata /*data*/) external view returns (bytes4) {
@@ -84,54 +48,64 @@ contract RankerDaoBridge is NonblockingLzApp, IERC721Receiver {
     }
 
     function _nonblockingLzReceive(uint16 _srcChainId, bytes memory /* _srcAddress */, uint64 /* _nonce */, bytes memory _payload) internal override {
-        TransferData memory transferData = _parseTransferData(_payload);
-        require(lzChainId == transferData.recipientChainId, "Invalid target chain");
-        require(transferData.senderChainId == _srcChainId, "Invalid source chain, doesn't match with source chain of token being transferred");
+        BridgeStorage.TransferData memory transferData = _parseTransferData(_payload);
 
-        _completeTransfer(transferData);
+        bytes32 identifier = keccak256(abi.encodePacked(transferData.recipientAddress, transferData.tokenAddress, transferData.tokenId));
+        BridgeState.onHoldTransfer[_srcChainId][identifier] = _payload;
     }
 
-    function _completeTransfer(TransferData memory transferData) internal {
-        IERC721 token;
-        address wrappedTokenAddress;
-        if (transferData.tokenChainId == lzChainId) {
-            token = IERC721(bytes32ToAddress(transferData.tokenAddress));
-        } else {
-            address wrapped = wrappedAsset(transferData.tokenChainId, transferData.tokenAddress);
+    function redeemNFT(uint16 srcChain, address recipientAddress, address tokenAddress, uint256 tokenId) public {
+        bytes32 identifier = keccak256(abi.encodePacked(recipientAddress, tokenAddress, tokenId));
+        bytes memory payload = BridgeState.onHoldTransfer[srcChain][identifier];
+        require(payload.length > 0, "No matching NFT transfer transactions");
 
-            if (wrapped == address(0x0)) {
-                wrapped = _createWrapped(transferData.tokenChainId, transferData.tokenAddress, transferData.name, transferData.symbol);
-            }
-            wrappedTokenAddress = wrapped;
-            token = IERC721(wrapped);
-        }
+        BridgeStorage.TransferData memory transferData = _parseTransferData(payload);
+        require(transferData.recipientAddress == msg.sender, "Only the recipient can redeem");
 
-        address transferRecipient = bytes32ToAddress(transferData.recipientAddress);
-
-        if (transferData.tokenChainId != lzChainId) {
-            WrappedERC721Implementation(address(token)).mint(transferRecipient, transferData.tokenId, transferData.uri);
-        } else {
-            token.safeTransferFrom(address(this), transferRecipient, transferData.tokenId);
-        }
+        (, address wrappedToken) = _completeTransfer(transferData);
         emit ReceiveNFT(
-            bytes32ToAddress(transferData.tokenAddress),
-            address(token),
-            bytes32ToAddress(transferData.srcChainWrappedTokenAddress),
-            bytes32ToAddress(transferData.senderAddress),
-            transferRecipient,
+            transferData.tokenAddress,
+            wrappedToken,
+            transferData.recipientAddress,
             transferData.tokenId,
-            transferData.senderChainId,
+            srcChain,
             transferData.tokenChainId
         );
     }
 
+    function _completeTransfer(BridgeStorage.TransferData memory transferData) internal returns (bool isWrapped, address wrappedTokenAddress) {
+        IERC721 token;
+        if (transferData.tokenChainId == lzChainId) {
+            token = IERC721(transferData.tokenAddress);
+        } else {
+            address wrapped = wrappedAsset(transferData.tokenChainId, addressToBytes32(transferData.tokenAddress));
+            if (wrapped == address(0x0)) {
+                wrapped = _createWrapped(
+                    transferData.tokenChainId,
+                    addressToBytes32(transferData.tokenAddress),
+                    transferData.name,
+                    transferData.symbol
+                );
+            }
+            wrappedTokenAddress = wrapped;
+            isWrapped = true;
+            token = IERC721(wrapped);
+        }
+
+        if (transferData.tokenChainId != lzChainId) {
+            WrappedERC721Implementation(address(token)).mint(transferData.recipientAddress, transferData.tokenId, transferData.uri);
+        } else {
+            token.safeTransferFrom(address(this), transferData.recipientAddress, transferData.tokenId);
+        }
+    }
+
     function wrappedAsset(uint16 tokenChainId, bytes32 tokenAddress) public view returns (address) {
-        return wrappedAssets[tokenChainId][tokenAddress];
+        return _state.wrappedAssets[tokenChainId][tokenAddress];
     }
 
     function setWrappedAsset(uint16 tokenChainId, bytes32 tokenAddress, address wrapperAddress) internal {
-        wrappedAssets[tokenChainId][tokenAddress] = wrapperAddress;
-        isWrappedAsset[wrapperAddress] = true;
+        _state.wrappedAssets[tokenChainId][tokenAddress] = wrapperAddress;
+        _state.isWrappedAsset[wrapperAddress] = true;
     }
 
     function _createWrapped(uint16 tokenChainId, bytes32 tokenAddress, bytes32 name, bytes32 symbol) internal returns (address token) {
@@ -158,26 +132,35 @@ contract RankerDaoBridge is NonblockingLzApp, IERC721Receiver {
         assembly {
             token := create2(0, add(bytecode, 0x20), mload(bytecode), salt)
 
-            if iszero(extcodesize(token)) {
+            let ext_code_size := extcodesize(token)
+
+            if iszero(extcodesize(ext_code_size)) {
                 revert(0, 0)
             }
+
+            extcodecopy(token, 0, 0, 1)
+
+            if iszero(mload(0)) {
+                let revert_size := sub(ext_code_size, 1)
+                extcodecopy(token, 0, 1, revert_size)
+                revert(0, revert_size)
+            }
         }
+        require(token != address(0x0), "Failed creating wrappen token contract");
         setWrappedAsset(tokenChainId, tokenAddress, token);
     }
 
-    function _parseTransferData(bytes memory payload) internal pure returns (TransferData memory) {
-        TransferData memory transferData;
+    function _parseTransferData(bytes memory payload) internal pure returns (BridgeStorage.TransferData memory) {
+        BridgeStorage.TransferData memory transferData;
         (
             transferData.tokenAddress,
-            transferData.srcChainWrappedTokenAddress,
             transferData.tokenChainId,
             transferData.symbol,
             transferData.name,
             transferData.tokenId,
             transferData.uri,
-            transferData.recipientAddress,
-            transferData.recipientChainId
-        ) = abi.decode(payload, (bytes32, bytes32, uint16, bytes32, bytes32, uint256, string, bytes32, uint16));
+            transferData.recipientAddress
+        ) = abi.decode(payload, (address, uint16, bytes32, bytes32, uint256, string, address));
         return transferData;
     }
 
@@ -188,17 +171,16 @@ contract RankerDaoBridge is NonblockingLzApp, IERC721Receiver {
     /// @param recipientChainId The destination receipent lz chainId
     /// @param recipientDestAddress a wallet address of recipient in destination chain
     function transferNFT(address token, uint256 tokenId, uint16 recipientChainId, address recipientDestAddress) public payable {
-        TransferData memory transferData;
+        BridgeStorage.TransferData memory transferData;
 
-        if (isWrappedAsset[token]) {
+        if (_state.isWrappedAsset[token]) {
             // if it's wrapper asset, then retrive the original token chainId
             transferData.tokenChainId = WrappedERC721Implementation(token).chainId();
             // get the native contract address
-            transferData.tokenAddress = WrappedERC721Implementation(token).nativeContract();
-            transferData.srcChainWrappedTokenAddress = addressToBytes32(token);
+            transferData.tokenAddress = bytes32ToAddress(WrappedERC721Implementation(token).nativeContract());
         } else {
             transferData.tokenChainId = lzChainId;
-            transferData.tokenAddress = addressToBytes32(token);
+            transferData.tokenAddress = token;
             require(ERC165(token).supportsInterface(type(IERC721).interfaceId), "token must support the ERC721 interface");
             require(ERC165(token).supportsInterface(type(IERC721Metadata).interfaceId), "must support the ERC721-Metadata extension");
         }
@@ -210,26 +192,23 @@ contract RankerDaoBridge is NonblockingLzApp, IERC721Receiver {
             WrappedERC721Implementation(token).burn(tokenId);
         }
         transferData.tokenId = tokenId;
-        transferData.recipientAddress = addressToBytes32(recipientDestAddress);
-        transferData.recipientChainId = recipientChainId;
-        transferData.senderAddress = addressToBytes32(_msgSender());
-        transferData.senderChainId = lzChainId;
+        transferData.recipientAddress = recipientDestAddress;
 
-        _transferNFT(transferData);
+        _transferNFT(transferData, recipientChainId);
 
-        emit TransferNFT(
-            token,
-            bytes32ToAddress(transferData.srcChainWrappedTokenAddress),
-            _msgSender(),
-            recipientDestAddress,
-            transferData.tokenChainId,
-            transferData.senderChainId,
-            recipientChainId,
-            tokenId
-        );
+        emit TransferNFT(token, _msgSender(), recipientDestAddress, lzChainId, recipientChainId, tokenId);
     }
 
-    function _determineTokenAndChain() internal view returns (uint16 tokenChainId, address tokenAddress, address inChainWrappedTokenAddress) {}
+    function _transferNFT(BridgeStorage.TransferData memory transfer, uint16 recipientChainId) internal {
+        bytes memory payload = _encodeTransferData(transfer);
+
+        bytes memory adapterParams = abi.encodePacked(ADAPTER_PARAM_VERSION, defaultGasForDestinationLzReceive);
+
+        (uint256 estimatedFee, ) = lzEndpoint.estimateFees(recipientChainId, address(this), payload, false, adapterParams);
+        require(msg.value >= estimatedFee, "Not enough payable value to cover gas fee in destination address");
+
+        _lzSend(recipientChainId, payload, payable(_msgSender()), address(0x0), adapterParams, msg.value);
+    }
 
     function _retrieveMetadata(address tokenAddress, uint256 tokenId) internal view returns (bytes32 symbol, bytes32 name, string memory uri) {
         (, bytes memory queriedSymbol) = tokenAddress.staticcall(abi.encodeWithSignature("symbol()"));
@@ -252,36 +231,21 @@ contract RankerDaoBridge is NonblockingLzApp, IERC721Receiver {
         }
     }
 
-    function _transferNFT(TransferData memory transfer) internal {
-        uint16 dstChainId = transfer.recipientChainId;
-
-        bytes memory payload = _encodeTransfer(transfer);
-
-        // use adapterParams v1 to specify more gas for the destination
-        uint16 version = 1;
-        uint gasForDestinationLzReceive = 350000;
-        bytes memory adapterParams = abi.encodePacked(version, gasForDestinationLzReceive);
-
-        (uint256 estimatedFee, ) = lzEndpoint.estimateFees(dstChainId, address(this), payload, false, adapterParams);
-        require(msg.value >= estimatedFee, "Not enough payable value to cover gas fee in destination address");
-
-        _lzSend(dstChainId, payload, payable(_msgSender()), address(0x0), adapterParams, msg.value);
-    }
-
-    function _encodeTransfer(TransferData memory transfer) internal pure returns (bytes memory) {
-        require(bytes(transfer.uri).length <= 200, "tokenURI must not exceed 200 bytes");
+    function _encodeTransferData(BridgeStorage.TransferData memory transfer) internal pure returns (bytes memory) {
         bytes memory encoded = abi.encodePacked(
             transfer.tokenAddress,
-            transfer.srcChainWrappedTokenAddress,
             transfer.tokenChainId,
             transfer.symbol,
             transfer.name,
             transfer.tokenId,
             transfer.uri,
-            transfer.recipientAddress,
-            transfer.recipientChainId
+            transfer.recipientAddress
         );
         return encoded;
+    }
+
+    function setDefaultGasForDestinationLzReceive(uint256 _price) external onlyOwner {
+        defaultGasForDestinationLzReceive = _price;
     }
 
     // ------------------ HELPERS --------------------
