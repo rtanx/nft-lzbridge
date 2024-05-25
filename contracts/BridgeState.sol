@@ -37,5 +37,4 @@ contract BridgeStorage {
 
 contract BridgeState {
     BridgeStorage.State _state;
-    mapping(uint16 => mapping(bytes32 => bytes)) internal onHoldTransfer;
 }

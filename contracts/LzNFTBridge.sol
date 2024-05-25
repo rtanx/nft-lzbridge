@@ -17,7 +17,6 @@ contract LzNFTBridge is NonblockingLzApp, IERC721Receiver, BridgeState {
     // Provider chainId where contract deployed
     uint16 public immutable lzChainId;
 
-    uint256 defaultGasForDestinationLzReceive = 1000000;
     uint16 public immutable ADAPTER_PARAM_VERSION = 1;
 
     event TransferNFT(
@@ -50,25 +49,13 @@ contract LzNFTBridge is NonblockingLzApp, IERC721Receiver, BridgeState {
     function _nonblockingLzReceive(uint16 _srcChainId, bytes memory /* _srcAddress */, uint64 /* _nonce */, bytes memory _payload) internal override {
         BridgeStorage.TransferData memory transferData = _parseTransferData(_payload);
 
-        bytes32 identifier = keccak256(abi.encodePacked(transferData.recipientAddress, transferData.tokenAddress, transferData.tokenId));
-        BridgeState.onHoldTransfer[_srcChainId][identifier] = _payload;
-    }
-
-    function redeemNFT(uint16 srcChain, address recipientAddress, address tokenAddress, uint256 tokenId) public {
-        bytes32 identifier = keccak256(abi.encodePacked(recipientAddress, tokenAddress, tokenId));
-        bytes memory payload = BridgeState.onHoldTransfer[srcChain][identifier];
-        require(payload.length > 0, "No matching NFT transfer transactions");
-
-        BridgeStorage.TransferData memory transferData = _parseTransferData(payload);
-        require(transferData.recipientAddress == msg.sender, "Only the recipient can redeem");
-
         (, address wrappedToken) = _completeTransfer(transferData);
         emit ReceiveNFT(
             transferData.tokenAddress,
             wrappedToken,
             transferData.recipientAddress,
             transferData.tokenId,
-            srcChain,
+            _srcChainId,
             transferData.tokenChainId
         );
     }
@@ -123,30 +110,22 @@ contract LzNFTBridge is NonblockingLzApp, IERC721Receiver, BridgeState {
         );
 
         // init beacon proxy
-        bytes memory constructorArgs = abi.encode(address(this), initArgs);
+        // bytes memory constructorArgs = abi.encode(address(this), initArgs);
 
-        bytes memory bytecode = abi.encodePacked(type(BridgeNFT).creationCode, constructorArgs);
+        // bytes memory bytecode = abi.encodePacked(type(BridgeNFT).creationCode, constructorArgs);
+        bytes memory bytecode = abi.encodePacked(type(WrappedERC721Implementation).creationCode, initArgs);
 
         bytes32 salt = keccak256(abi.encodePacked(tokenChainId, tokenAddress));
 
         assembly {
             token := create2(0, add(bytecode, 0x20), mload(bytecode), salt)
 
-            let ext_code_size := extcodesize(token)
-
-            if iszero(extcodesize(ext_code_size)) {
+            if iszero(extcodesize(token)) {
                 revert(0, 0)
             }
-
-            extcodecopy(token, 0, 0, 1)
-
-            if iszero(mload(0)) {
-                let revert_size := sub(ext_code_size, 1)
-                extcodecopy(token, 0, 1, revert_size)
-                revert(0, revert_size)
-            }
         }
-        require(token != address(0x0), "Failed creating wrappen token contract");
+
+        require(token != address(0x0), "Failed creating wrapped token contract");
         setWrappedAsset(tokenChainId, tokenAddress, token);
     }
 
@@ -170,7 +149,14 @@ contract LzNFTBridge is NonblockingLzApp, IERC721Receiver, BridgeState {
     /// @param tokenId A tokenId to transfer
     /// @param recipientChainId The destination receipent lz chainId
     /// @param recipientDestAddress a wallet address of recipient in destination chain
-    function transferNFT(address token, uint256 tokenId, uint16 recipientChainId, address recipientDestAddress) public payable {
+    /// @param customGasForDestReceiver to specify more gas for the destination receiver
+    function transferNFT(
+        address token,
+        uint256 tokenId,
+        uint16 recipientChainId,
+        address recipientDestAddress,
+        uint256 customGasForDestReceiver
+    ) public payable {
         BridgeStorage.TransferData memory transferData;
 
         if (_state.isWrappedAsset[token]) {
@@ -194,15 +180,19 @@ contract LzNFTBridge is NonblockingLzApp, IERC721Receiver, BridgeState {
         transferData.tokenId = tokenId;
         transferData.recipientAddress = recipientDestAddress;
 
-        _transferNFT(transferData, recipientChainId);
+        bytes memory adapterParams;
+
+        if (customGasForDestReceiver > 0) {
+            adapterParams = abi.encodePacked(ADAPTER_PARAM_VERSION, customGasForDestReceiver);
+        }
+
+        _transferNFT(transferData, recipientChainId, adapterParams);
 
         emit TransferNFT(token, _msgSender(), recipientDestAddress, lzChainId, recipientChainId, tokenId);
     }
 
-    function _transferNFT(BridgeStorage.TransferData memory transfer, uint16 recipientChainId) internal {
+    function _transferNFT(BridgeStorage.TransferData memory transfer, uint16 recipientChainId, bytes memory adapterParams) internal {
         bytes memory payload = _encodeTransferData(transfer);
-
-        bytes memory adapterParams = abi.encodePacked(ADAPTER_PARAM_VERSION, defaultGasForDestinationLzReceive);
 
         (uint256 estimatedFee, ) = lzEndpoint.estimateFees(recipientChainId, address(this), payload, false, adapterParams);
         require(msg.value >= estimatedFee, "Not enough payable value to cover gas fee in destination address");
@@ -232,7 +222,7 @@ contract LzNFTBridge is NonblockingLzApp, IERC721Receiver, BridgeState {
     }
 
     function _encodeTransferData(BridgeStorage.TransferData memory transfer) internal pure returns (bytes memory) {
-        bytes memory encoded = abi.encodePacked(
+        bytes memory encoded = abi.encode(
             transfer.tokenAddress,
             transfer.tokenChainId,
             transfer.symbol,
@@ -242,10 +232,6 @@ contract LzNFTBridge is NonblockingLzApp, IERC721Receiver, BridgeState {
             transfer.recipientAddress
         );
         return encoded;
-    }
-
-    function setDefaultGasForDestinationLzReceive(uint256 _price) external onlyOwner {
-        defaultGasForDestinationLzReceive = _price;
     }
 
     // ------------------ HELPERS --------------------

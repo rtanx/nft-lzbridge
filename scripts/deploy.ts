@@ -1,3 +1,4 @@
+import { time } from "@nomicfoundation/hardhat-toolbox/network-helpers";
 import { ethers, network, run } from "hardhat";
 
 interface DeploymentConfig {
@@ -68,7 +69,11 @@ async function main() {
 
   await contract.waitForDeployment();
   await contract.deploymentTransaction()?.wait();
-  console.log("Verifying deployed contract...")
+  
+
+  await (new Promise(res => setTimeout(res,15*1000)));
+
+  console.log("Verifying deployed contract...");
   await run("verify:verify", {
     address: contractAddress,
     constructorArguments: [depConf.lz0chainId ,depConf.lz0EndpointAddress]
